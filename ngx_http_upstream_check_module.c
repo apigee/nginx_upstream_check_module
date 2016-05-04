@@ -288,6 +288,12 @@ typedef struct {
     ngx_http_fastcgi_header_small_t   h1;
 } ngx_http_fastcgi_request_start_t;
 
+typedef struct {
+    ngx_str_t  *upstream_name;
+    ngx_uint_t total;
+    ngx_uint_t up;
+} ngx_http_upstream_availability_t;
+
 
 #define NGX_HTTP_FASTCGI_RESPONDER      1
 
@@ -450,6 +456,8 @@ static void ngx_http_upstream_check_status_csv_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 static void ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
+static void ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
+    ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 
 static ngx_int_t ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool,
     ngx_addr_t *dst, ngx_addr_t *src, ngx_uint_t port);
@@ -514,6 +522,12 @@ static ngx_int_t ngx_http_upstream_check_init_shm_zone(
 
 
 static ngx_int_t ngx_http_upstream_check_init_process(ngx_cycle_t *cycle);
+
+static ngx_int_t ngx_http_upstream_upsert_availability(ngx_array_t *upstreams,
+                                                       ngx_str_t *upstream_name,
+                                                       uint up,
+                                                       uint total);
+
 
 
 static ngx_conf_bitmask_t  ngx_check_http_expect_alive_masks[] = {
@@ -772,6 +786,10 @@ static ngx_check_status_conf_t  ngx_check_status_formats[] = {
       ngx_string("application/json"), /* RFC 4627 */
       ngx_http_upstream_check_status_json_format },
 
+    { ngx_string("influxdb"),
+      ngx_string("text/plain"),
+      ngx_http_upstream_check_status_line_format },
+
     { ngx_null_string, ngx_null_string, NULL }
 };
 
@@ -790,6 +808,7 @@ static ngx_check_status_command_t ngx_check_status_commands[] =  {
 
 static ngx_uint_t ngx_http_upstream_check_shm_generation = 0;
 static ngx_http_upstream_check_peers_t *check_peers_ctx = NULL;
+static ngx_pool_t *ngx_common_pool = NULL;
 
 
 ngx_uint_t
@@ -990,7 +1009,6 @@ ngx_http_upstream_check_add_dynamic_peer(ngx_pool_t *pool,
         }
 
         if (elts != peers->peers.elts) {
-
             ngx_log_error(NGX_LOG_INFO, pool->log, 0,
                           "http upstream check add peer realloc memory");
 
@@ -3040,7 +3058,6 @@ ngx_http_upstream_check_need_exit()
         ngx_http_upstream_check_clear_all_events();
         return 1;
     }
-
     return 0;
 }
 
@@ -3070,7 +3087,6 @@ ngx_http_upstream_check_clear_all_events()
         if (peer[i].delete) {
             continue;
         }
-
         ngx_http_upstream_check_clear_peer(&peer[i]);
     }
 }
@@ -3506,6 +3522,87 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "}}\n");
 }
+
+
+static ngx_int_t ngx_http_upstream_upsert_availability(ngx_array_t *upstreams,
+                                                       ngx_str_t *upstream_name,
+                                                       uint up,
+                                                       uint total) {
+    ngx_uint_t i;
+    ngx_http_upstream_availability_t *av;
+    /* See if the availability info is present */
+    if (upstreams->nelts > 0) {
+        av = upstreams->elts;
+        for (i=0; i<upstreams->nelts; i++) {
+            if (ngx_strcmp(av->upstream_name, upstream_name) == 0) {
+                av->total += total;
+                av->up    += up;
+                return NGX_OK;
+            }
+        }
+    }
+    av = ngx_array_push(upstreams);
+    av->upstream_name = upstream_name;
+    av->total = total;
+    av->up = up;
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
+                                           ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag) {
+    ngx_uint_t i;
+    ngx_array_t *upstream_pool_avail;
+
+    ngx_http_upstream_check_peer_t *peer;
+    ngx_http_upstream_availability_t *av;
+
+    upstream_pool_avail = ngx_array_create(ngx_common_pool, 256, // Will grow as necessary
+                                           sizeof(ngx_http_upstream_availability_t));
+    peer = peers->peers.elts;
+    for (i = 0; i < peers->peers.nelts; i++) {
+        if (peer[i].delete) {
+            continue;
+        }
+        if (flag & NGX_CHECK_STATUS_DOWN) {
+            if (!peer[i].shm->down) {
+                continue;
+            }
+        } else if (flag & NGX_CHECK_STATUS_UP) {
+            if (peer[i].shm->down) {
+                continue;
+            }
+        }
+        /* Leave timestamp calculation to telegraf */
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                               "upstream_peer_status,service=nginx,peer=\"%V\" "
+                               "pool=\"%V\",status=%s,rise=%ui,fall=%ui,type=%V,port=%ui\n",
+                               &peer[i].peer_addr->name,
+                               peer[i].upstream_name,
+                               peer[i].shm->down ? "down": "up",
+                               peer[i].shm->rise_count,
+                               peer[i].shm->fall_count,
+                               &peer[i].conf->check_type_conf->name,
+                               peer[i].conf->port);
+        ngx_http_upstream_upsert_availability(upstream_pool_avail,
+                                              peer[i].upstream_name,
+                                              peer[i].shm->down ? 0 : 1,
+                                              1);
+    }
+    av = upstream_pool_avail->elts;
+    for (i=0; i<upstream_pool_avail->nelts; i++) {
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                               "upstream_availability,service=nginx,pool=\"%V\" "
+                               "up=%ui,total=%ui,ratio=%0.2f\n",
+                               av->upstream_name,
+                               av->up,
+                               av->total,
+                               av->total == 0 ? 0 : av->up/(double)av->total);
+    }
+    ngx_array_destroy(upstream_pool_avail);
+}
+
 
 
 static ngx_check_conf_t *
@@ -4096,12 +4193,11 @@ ngx_http_upstream_check_init_main_conf(ngx_conf_t *cf, void *conf)
     uscfp = umcf->upstreams.elts;
 
     for (i = 0; i < umcf->upstreams.nelts; i++) {
-
         if (ngx_http_upstream_check_init_srv_conf(cf, uscfp[i]) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
     }
-
+    ngx_common_pool = cf->pool;
     return ngx_http_upstream_check_init_shm(cf, conf);
 }
 
