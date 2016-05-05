@@ -3574,17 +3574,6 @@ ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
                 continue;
             }
         }
-        /* Leave timestamp calculation to telegraf */
-        b->last = ngx_snprintf(b->last, b->end - b->last,
-                               "upstream_peer_status,service=nginx,peer=\"%V\" "
-                               "pool=\"%V\",status=%s,rise=%ui,fall=%ui,type=%V,port=%ui\n",
-                               &peer[i].peer_addr->name,
-                               peer[i].upstream_name,
-                               peer[i].shm->down ? "down": "up",
-                               peer[i].shm->rise_count,
-                               peer[i].shm->fall_count,
-                               &peer[i].conf->check_type_conf->name,
-                               peer[i].conf->port);
         ngx_http_upstream_upsert_availability(upstream_pool_avail,
                                               peer[i].upstream_name,
                                               peer[i].shm->down ? 0 : 1,
@@ -3593,7 +3582,7 @@ ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
     av = upstream_pool_avail->elts;
     for (i=0; i<upstream_pool_avail->nelts; i++) {
         b->last = ngx_snprintf(b->last, b->end - b->last,
-                               "upstream_availability,service=nginx,pool=\"%V\" "
+                               "upstream_availability,service=nginx,pool=%V "
                                "up=%ui,total=%ui,ratio=%0.2f\n",
                                av->upstream_name,
                                av->up,
