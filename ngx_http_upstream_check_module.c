@@ -3534,9 +3534,12 @@ static ngx_int_t ngx_http_upstream_upsert_availability(ngx_array_t *upstreams,
     if (upstreams->nelts > 0) {
         av = upstreams->elts;
         for (i=0; i<upstreams->nelts; i++) {
-            if (ngx_strcmp(av->upstream_name, upstream_name) == 0) {
-                av->total += total;
-                av->up    += up;
+            if (ngx_strncmp(av[i].upstream_name->data,
+                            upstream_name->data,
+                            upstream_name->len) == 0)
+            {
+                av[i].total += total;
+                av[i].up    += up;
                 return NGX_OK;
             }
         }
@@ -3558,7 +3561,7 @@ ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
     ngx_http_upstream_check_peer_t *peer;
     ngx_http_upstream_availability_t *av;
 
-    upstream_pool_avail = ngx_array_create(ngx_common_pool, 256, // Will grow as necessary
+    upstream_pool_avail = ngx_array_create(ngx_common_pool, 512, // Will grow as necessary
                                            sizeof(ngx_http_upstream_availability_t));
     peer = peers->peers.elts;
     for (i = 0; i < peers->peers.nelts; i++) {
@@ -3574,6 +3577,16 @@ ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
                 continue;
             }
         }
+        /* Leave timestamp calculation to telegraf */
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                               "upstream_peer_status,app=edge,service=nginx,peer=%V,pool=%V,type=%V "
+                               "status=%ui,rise=%ui,fall=%ui\n",
+                               &peer[i].peer_addr->name,
+                               peer[i].upstream_name,
+                               &peer[i].conf->check_type_conf->name,
+                               peer[i].shm->down ? 0 : 1,
+                               peer[i].shm->rise_count,
+                               peer[i].shm->fall_count);
         ngx_http_upstream_upsert_availability(upstream_pool_avail,
                                               peer[i].upstream_name,
                                               peer[i].shm->down ? 0 : 1,
@@ -3582,12 +3595,12 @@ ngx_http_upstream_check_status_line_format(ngx_buf_t *b,
     av = upstream_pool_avail->elts;
     for (i=0; i<upstream_pool_avail->nelts; i++) {
         b->last = ngx_snprintf(b->last, b->end - b->last,
-                               "upstream_availability,service=nginx,pool=%V "
+                               "upstream_availability,app=edge,service=nginx,pool=%V "
                                "up=%ui,total=%ui,ratio=%0.2f\n",
-                               av->upstream_name,
-                               av->up,
-                               av->total,
-                               av->total == 0 ? 0 : av->up/(double)av->total);
+                               av[i].upstream_name,
+                               av[i].up,
+                               av[i].total,
+                               av[i].total == 0 ? 0 : av[i].up/(double)av[i].total);
     }
     ngx_array_destroy(upstream_pool_avail);
 }
