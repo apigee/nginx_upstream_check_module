@@ -27,7 +27,7 @@ Synopsis
                 proxy_pass http://cluster;
             }
 
-            location /status {
+            location /hmstatus {
                 check_status;
 
                 access_log   off;
@@ -151,7 +151,7 @@ Directives
     enlarge it with this directive.
 
   check_status
-    syntax: *check_status [html|csv|json]*
+    syntax: *check_status [html|csv|json|influxdb]*
 
     default: *none*
 
@@ -161,20 +161,21 @@ Directives
     directive should be set in the http block.
 
     You can specify the default display format. The formats can be `html`,
-    `csv` or `json`. The default type is `html`. It also supports to specify
+    `csv` `json` or `influxdb`. The default type is `html`. It also supports to specify
     the format by the request argument. Suppose your `check_status` location
-    is '/status', the argument of `format` can change the display page's
+    is '/hmstatus', the argument of `format` can change the display page's
     format. You can do like this:
 
-        /status?format=html
-        /status?format=csv
-        /status?format=json
+        /hmstatus?format=html
+        /hmstatus?format=csv
+        /hmstatus?format=json
+        /hmstatus?format=influxdb
 
     At present, you can fetch the list of servers with the same status by
     the argument of `status`. For example:
 
-        /status?format=html&status=down
-        /status?format=csv&status=up
+        /hmstatus?format=html&status=down
+        /hmstatus?format=csv&status=up
 
     Below it's the sample html page:
 
@@ -213,6 +214,11 @@ Directives
            {"index": 0, "upstream": "backend", "name": "106.187.48.116:80", "status": "up", "rise": 58, "fall": 0, "type": "http", "port": 80}
           ]
          }}
+
+    Below it's the sample of influxdb page:
+
+        upstream_peer_status,app=edge,service=nginx,peer=106.187.48.116:80,pool=backend,type=http status=1,rise=46,fall=0
+        upstream_availability,app=edge,service=nginx,pool=backend up=1,total=1,ratio=1.00
 
 Installation
     Download the latest version of the release tarball of this module from
